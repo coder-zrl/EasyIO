@@ -92,7 +92,9 @@ public class ChatClient {
         try {
             while (channel.read(rBuffer)>0) {}
         } catch (IOException e) {
-            throw new RuntimeException("远程服务器出错，请关闭程序...");
+            throw new RuntimeException("服务器异常，程序自动关闭...");
+        } finally {
+            System.exit(1);
         }
         rBuffer.flip();
         return String.valueOf(charset.decode(rBuffer));

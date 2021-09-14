@@ -9,12 +9,9 @@ import java.nio.channels.AsynchronousServerSocketChannel;
 import java.nio.channels.AsynchronousSocketChannel;
 import java.nio.channels.CompletionHandler;
 import java.nio.charset.Charset;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 /**
  * @author Zhang Ruilong
@@ -50,15 +47,44 @@ public class ChatServer {
             }
         }
     }
-    private void start() {
+    /**
+     * 获取客户端信息
+     */
+    private String getClientName(AsynchronousSocketChannel clientChannel) {
+        int clientPort = -1;
+        try {
+            InetSocketAddress inetSocketAddress = (InetSocketAddress) clientChannel.getRemoteAddress();
+            clientPort = inetSocketAddress.getPort();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return "客户端[" + clientPort + "]";
+    }
+    /**
+     * 添加用户
+     */
+    private synchronized void addClient(ClientHandler clientHandler) {
+        connectedClients.add(clientHandler);
+        System.out.println(getClientName(clientHandler.clientChannel) + "已经连接到服务器");
+    }
+
+    /**
+     * 移除用户
+     */
+    private synchronized void removeClient(ClientHandler clientHandler) {
+        connectedClients.remove(clientHandler);
+        System.out.println(getClientName(clientHandler.clientChannel)+"已被移除");
+        close(clientHandler.clientChannel);
+    }
+    public void start() {
         ExecutorService executorService = Executors.newFixedThreadPool(THREADPOOL_SIZE);
         try {
             channelGroup = AsynchronousChannelGroup.withThreadPool(executorService);
             serverSocketChannel = AsynchronousServerSocketChannel.open(channelGroup);
-            serverSocketChannel.bind(new InetSocketAddress(DEFAULT_HOST,DEFAULT_PORT));
-            System.out.println("服务器启动，正在监听"+DEFAULT_PORT+"端口");
+            serverSocketChannel.bind(new InetSocketAddress(DEFAULT_HOST,port));
+            System.out.println("服务器启动，正在监听"+port+"端口");
             while (true) {//这里要循环是因为异步操作，accept不阻塞，执行完服务器就宕掉了
-                //异步操作，attachment是辅助信息，我们这里不需要 todo
+                //异步操作，attachment是辅助信息，我们这里不需要
                 serverSocketChannel.accept(null, new AcceptHandler());
                 //等待输入，会阻塞一下，不至于一直循环或者等待几秒再循环
                 System.in.read();
@@ -81,9 +107,9 @@ public class ChatServer {
             if (clientChannel.isOpen() && clientChannel!=null) {
                 //读操作
                 ByteBuffer buffer = ByteBuffer.allocate(BUFFER);
-                //新用户添加到用户列表 todo
+                //新用户添加到用户列表
                 ClientHandler handler = new ClientHandler(clientChannel);
-                connectedClients.add(handler);
+                addClient(handler);
                 clientChannel.read(buffer,buffer, handler);
             }
         }
@@ -108,20 +134,25 @@ public class ChatServer {
             //写回clientChannel
             ByteBuffer buffer = (ByteBuffer) attachment;
             if (buffer!=null) {
-                if (result<=0) {//用户异常下线
-                    //todo 移除用户
+                if (result<=0) {
+                    //用户异常下线，移除用户
                     connectedClients.remove(this);
                 } else {
                     buffer.flip();
-                    // todo 读取信息的函数
+                    //读取信息
                     String fwdMsg = receive(buffer);
-                    try {
-                        System.out.println("客户端["+clientChannel.getRemoteAddress()+"]："+fwdMsg);
-                    } catch (IOException e) {
-                        e.printStackTrace();
-                    }
+                    System.out.println(getClientName(clientChannel) + ":" +fwdMsg);
+                    //转发信息
                     forwardMessage(clientChannel,fwdMsg);
                     buffer.clear();
+                    // 检查用户是否退出
+                    if (checkQuit(fwdMsg)){
+                        // 将客户从在线客户列表中去除
+                        removeClient(this);
+                    }else {
+                        // 接着读
+                        clientChannel.read(buffer,buffer,this);
+                    }
                 }
             }
         }
@@ -131,23 +162,29 @@ public class ChatServer {
         }
     }
 
+    private boolean checkQuit(String msg) {
+        return msg.equals(QUIT);
+    }
+
     private String receive(ByteBuffer buffer) {
         return String.valueOf(charset.decode(buffer));
     }
 
-    private void forwardMessage(AsynchronousSocketChannel clientChannel, String fwdMsg) {
-        ByteBuffer buffer = ByteBuffer.wrap(fwdMsg.getBytes(StandardCharsets.UTF_8))
+    private synchronized void forwardMessage(AsynchronousSocketChannel clientChannel, String fwdMsg) {
         for (ClientHandler connectedClient : connectedClients) {
-            if (!clientChannel.equals(clientChannel)) {
-                AsynchronousSocketChannel clientChannel1 = connectedClient.getClientChannel();
-                //转发消息
-                clientChannel1.write(buffer);
+            if (!connectedClient.clientChannel.equals(clientChannel)) {
+                try {
+                    // 防止发生意想不到的错误或异常
+                    ByteBuffer byteBuffer = charset.encode(getClientName(connectedClient.clientChannel) + ":" + fwdMsg);
+                    connectedClient.clientChannel.write(byteBuffer, null, connectedClient);
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
             }
         }
     }
 
-
     public static void main(String[] args) {
-        new ChatServer().start();
+        new ChatServer(7777).start();
     }
 }
